@@ -1,0 +1,53 @@
+# ===== Keil MDK 编译产物 =====
+Objects/
+Listings/
+DebugConfig/
+RTE/_*/
+
+# 目标文件
+*.obj
+*.o
+*.d
+*.crf
+*.lst
+*.map
+*.hex
+*.bin
+*.axf
+*.elf
+*.sct
+*.lnp
+*.iex
+*.sbr
+*.dep
+*.bak
+*.merged
+
+# 工程临时文件
+*.uvguix.*
+*.uvoptx
+*.uvopt
+*.uvgui.*
+*.scvd
+*.JLinkLog.txt
+*.JLinkSettings.ini
+*.Launcher.ini
+*.ini
+*.JLinkDebug
+
+# 备份
+*~
+*.backup
+*.old
+*.orig
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 编辑器临时文件
+.vscode/
+.idea/
+*.swp
+*.swo
