@@ -17,9 +17,14 @@ extern "C" {
 
 /*==============================================================================
  * 配置 — 最大任务数 (按需修改)
+ *
+ * @warning 这个值必须 >= 下面 TaskHandle_t 枚举的成员个数 (TASK_MAX).
+ *          一旦小于, Scheduler_RegisterTask() 对超界的 id 直接 return 0,
+ *          **不报错、不打印、不留痕迹**, 表现为"任务函数写了但从来不执行",
+ *          极易误判成外设/驱动问题. scheduler.c 末尾有一处编译期断言兜底.
  *============================================================================*/
 #ifndef SCHEDULER_MAX_TASKS
-#define SCHEDULER_MAX_TASKS  8
+#define SCHEDULER_MAX_TASKS  16
 #endif
 
 /*==============================================================================
@@ -34,6 +39,7 @@ typedef enum {
     TASK_LCD,               /* 应用: LCD 动画 (每帧渲染一次, 已停用) */
     TASK_ENCODER,           /* 应用: 编码器采样 + LCD 换色验证 (已停用) */
     TASK_KT,                /* 应用: KT06xx 初始化结果刷新 + 失败重试 */
+    TASK_UI,                /* 应用: SGL 图形界面 (周期 = CONFIG_SGL_SYSTICK_MS 10ms) */
     /* ... 在此添加更多任务 ... */
     TASK_MAX                /* 必须放最后, 自动表示任务总数 */
 } TaskHandle_t;

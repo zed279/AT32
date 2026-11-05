@@ -7,6 +7,25 @@
 #include <string.h>
 
 /*==============================================================================
+ * 编译期保险 —— 枚举个数不能超过任务槽位数
+ *
+ * @details Scheduler_RegisterTask() 对 id >= SCHEDULER_MAX_TASKS 的调用是
+ *          **静默 return 0**. 一旦有人往 TaskHandle_t 里加成员却忘了调大
+ *          SCHEDULER_MAX_TASKS, 新任务就永远不执行, 而且没有任何报错, 现象
+ *          跟"外设坏了"一模一样 (本工程 TASK_UI 就因为排到第 9 个而整整
+ *          一个下午没跑起来).
+ *
+ *          这里用 typedef 反向下标做静态断言: 条件成立时数组长度为 1,
+ *          不成立时长度为 -1, 编译直接报错. 比运行时检查可靠得多.
+ *============================================================================*/
+#if defined(__CC_ARM)
+typedef char scheduler_slot_check_t[(TASK_MAX <= SCHEDULER_MAX_TASKS) ? 1 : -1];
+#else
+_Static_assert(TASK_MAX <= SCHEDULER_MAX_TASKS,
+               "TASK_MAX exceeds SCHEDULER_MAX_TASKS: enlarge it in scheduler.h");
+#endif
+
+/*==============================================================================
  * 任务表 — 大小由 SCHEDULER_MAX_TASKS 控制
  *============================================================================*/
 static TaskCtrlBlock_t s_tasks[SCHEDULER_MAX_TASKS];

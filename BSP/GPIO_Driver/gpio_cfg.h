@@ -34,6 +34,7 @@ extern "C" {
 #define GPIO_PIN_LCD_RESET    0    /* PB0  复位, 低有效 */
 #define GPIO_PIN_LCD_DC       1    /* PA6  数据/命令选择 (A0) */
 #define GPIO_PIN_LCD_BL       2    /* PA3  背光 */
+#define GPIO_PIN_KEY          3    /* PB9  用户按键, 上拉输入, 低有效 */
 
 /* ============================ 硬件句柄编码宏 ============================ */
 /**
@@ -78,6 +79,7 @@ typedef struct {
  *   - LCD_RESET: PB0  (推挽输出, 初始高 -> 不复位)
  *   - LCD_DC:    PA6  (推挽输出, 初始高 -> 数据态)
  *   - LCD_BL:    PA3  (推挽输出, 初始灭, 由 st7789 驱动点亮)
+ *   - KEY:       PB9  (上拉输入, 按下为低; 外部只需按键到 GND, 不需要上拉电阻)
  *
  * @warning 映射表漏条目会导致 gpio_init() 返回 GPIO_ERR_PIN 且引脚无动作,
  *          新增引脚时必须同时在此表登记.
@@ -86,6 +88,7 @@ static const gpio_hw_pin_t g_gpio_pin_map[] GPIO_CFG_UNUSED = {
     { GPIO_PIN_LCD_RESET, HW_HANDLE(GPIO_PORT_B, 0) },   /* PB0  */
     { GPIO_PIN_LCD_DC,    HW_HANDLE(GPIO_PORT_A, 6) },   /* PA6  */
     { GPIO_PIN_LCD_BL,    HW_HANDLE(GPIO_PORT_A, 3) },   /* PA3  */
+    { GPIO_PIN_KEY,       HW_HANDLE(GPIO_PORT_B, 9) },   /* PB9  */
 };
 
 #define GPIO_PIN_TABLE_SIZE   (sizeof(g_gpio_pin_map) / sizeof(g_gpio_pin_map[0]))
