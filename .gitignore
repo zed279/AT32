@@ -46,6 +46,12 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# WorkBuddy 记忆文件
+.workbuddy/
+
+# 编译日志
+mdk_v5/*.log
+
 # 编辑器临时文件
 .vscode/
 .idea/
