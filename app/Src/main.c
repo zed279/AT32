@@ -30,9 +30,10 @@
 #include "app_events.h"
 #include "app.h"
 #include "kt_demo.h"
-#include "ui_demo.h"
-/* #include "encoder_demo.h" */   /* 编码器 Demo 已停用, 让位给 KT 界面 */
-/* #include "lcd_demo.h" */       /* LCD 跑分 Demo 已停用 (被 SGL 取代) */
+#include "ui_rx.h"                  /* 接收机主屏 (SGL) */
+/* #include "ui_demo.h" */         /* SGL 控件演示页, 已被 ui_rx 取代, 文件保留备查 */
+/* #include "encoder_demo.h" */    /* 编码器 Demo 已停用, 让位给 KT 界面 */
+/* #include "lcd_demo.h" */        /* LCD 跑分 Demo 已停用 (被 SGL 取代) */
 
 /*==============================================================================
  * 应用参数
@@ -80,7 +81,7 @@ int main(void)
      * 注意: SGL 接管后, 若某组 KT 芯片仍不可用, TASK_KT 每 5s 重试时会用
      * 裸 st7789 接口重画整屏, 会把 SGL 画面盖掉. 需要 SGL 独占显示时,
      * 把下面 TASK_KT 的注册注释掉即可 (KT 芯片仍会被初始化一次). */
-    ui_rc = UiDemo_Init();
+    ui_rc = UiRx_Init();
     if (ui_rc != 0)
     {
         /* 本板没有可用调试串口, 失败原因只能靠 LED 闪的次数读出来:
@@ -116,7 +117,7 @@ int main(void)
         ok &= Scheduler_RegisterTask(TASK_EVENT, App_Event_ProcessAll, APP_EVENT_PERIOD_MS);
         /* TASK_KT 已停用: 它每 5s 会用裸 st7789 重画整屏, 把 SGL 画面盖掉 */
         /* ok &= Scheduler_RegisterTask(TASK_KT, KtDemo_Task, KT_DEMO_PERIOD_MS); */
-        ok &= Scheduler_RegisterTask(TASK_UI,    UiDemo_Task,          UI_DEMO_PERIOD_MS);
+        ok &= Scheduler_RegisterTask(TASK_UI,    UiRx_Task,           UI_DEMO_PERIOD_MS);
 
         if (!ok)
         {

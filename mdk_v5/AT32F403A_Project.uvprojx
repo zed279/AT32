@@ -431,6 +431,11 @@
               <FileType>1</FileType>
               <FilePath>..\app\Src\ui_demo.c</FilePath>
             </File>
+            <File>
+              <FileName>ui_rx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\app\Src\ui_rx.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
