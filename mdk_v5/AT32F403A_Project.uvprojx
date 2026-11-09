@@ -14,7 +14,7 @@
       <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
-          <Device>-AT32F403AVGT7</Device>
+          <Device>-AT32F403ACGT7</Device>
           <Vendor>ArteryTek</Vendor>
           <PackID>ArteryTek.AT32F403A_407_DFP.2.2.4</PackID>
           <Cpu>IRAM(0x20000000,0x38000) IROM(0x08000000,0x100000) CPUTYPE("Cortex-M4") FPU2 CLOCK(12000000) ELITTLE</Cpu>
@@ -22,7 +22,7 @@
           <StartupFile></StartupFile>
           <FlashDriverDll></FlashDriverDll>
           <DeviceId>0</DeviceId>
-          <RegisterFile>$$Device:-AT32F403AVGT7$Device\Include\at32f403a_407.h</RegisterFile>
+          <RegisterFile>$$Device:-AT32F403ACGT7$Device\Include\at32f403a_407.h</RegisterFile>
           <MemoryEnv></MemoryEnv>
           <Cmp></Cmp>
           <Asm></Asm>
@@ -32,7 +32,7 @@
           <SLE66CMisc></SLE66CMisc>
           <SLE66AMisc></SLE66AMisc>
           <SLE66LinkerMisc></SLE66LinkerMisc>
-          <SFDFile>$$Device:-AT32F403AVGT7$SVD\AT32F403Axx_v2.svd</SFDFile>
+          <SFDFile>$$Device:-AT32F403ACGT7$SVD\AT32F403Axx_v2.svd</SFDFile>
           <bCustSvd>0</bCustSvd>
           <UseEnv>0</UseEnv>
           <BinPath></BinPath>
@@ -335,7 +335,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls></MiscControls>
-              <Define>AT32F403AVGT7,USE_STDPERIPH_DRIVER,AT_START_F403A_V1</Define>
+              <Define>AT32F403ACGT7,USE_STDPERIPH_DRIVER,AT_START_F403A_V1</Define>
               <Undefine></Undefine>
               <IncludePath>C:\Users\zed\Desktop\AT32F403A_Library\AT32F403A_407_Firmware_Library_V2.2.2\libraries\drivers\inc;C:\Users\zed\Desktop\AT32F403A_Library\AT32F403A_407_Firmware_Library_V2.2.2\libraries\cmsis\cm4\core_support;C:\Users\zed\Desktop\AT32F403A_Library\AT32F403A_407_Firmware_Library_V2.2.2\libraries\cmsis\cm4\device_support;..\inc;..\bm_arch\Inc;..\app\Inc;..\BSP\GPIO_Driver;..\BSP\SPI_Driver;..\BSP\LCD_Driver;..\BSP\Encoder_Driver;..\BSP\IIC_Driver;..\BSP\KT_Driver;..\BSP\UI_Driver;..\third_party\sgl;..\third_party\sgl\include;..\third_party\sgl\mm\lwmem;C:\Users\zed\Desktop\AT32F403A_Library\AT32F403A_407_Firmware_Library_V2.2.2\project\at32f403a_407_board</IncludePath>
             </VariousControls>
@@ -405,11 +405,6 @@
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\app\Src\main.c</FilePath>
-            </File>
-            <File>
-              <FileName>app.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\app\Src\app.c</FilePath>
             </File>
             <File>
               <FileName>lcd_demo.c</FileName>

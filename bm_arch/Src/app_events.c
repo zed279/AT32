@@ -8,7 +8,6 @@
  * @note    用户请根据自身应用修改 App_Event_Process() 中的 switch-case。
  */
 #include "app_events.h"
-#include "app.h"
 #include "bm_hal.h"
 #include "logger.h"
 #include <stdio.h>
@@ -90,9 +89,11 @@ void App_Event_Process(Message_t *msg)
             LOG_INFO("APP", "Unmuted");
             break;
 
-        /* ---- 应用: 按键按下 (业务实现在 app.c) ---- */
+        /* ---- 应用: 按键按下 ----
+         * 原模板在 app.c 里用 App_OnButtonPressed() 切换 LED 流水速度,
+         * 那是官方板 Demo, 已随 app.c 一起删除。MSG_BUTTON_PRESSED 的类型
+         * 定义保留在 msg_queue.h, 以后接真实按键时在这里接业务。 */
         case MSG_BUTTON_PRESSED:
-            App_OnButtonPressed();
             break;
 
         /* ---- 未知消息 ---- */
@@ -110,7 +111,12 @@ void App_Event_ProcessAll(void)
     Message_t msg;
     uint8_t processed = 0;
 
-    while (MsgQueue_Recv(&msg) && processed < APP_EVENT_BATCH_SIZE) {
+    /* 条件顺序不能反: MsgQueue_Recv() 是"先出队、后返回 1"。
+     * 若写成 (Recv() && processed < BATCH), 当 processed 已达上限时
+     * 左侧仍会执行一次出队, 随后右侧为假退出循环 —— 那条消息被取出来
+     * 却没有交给 App_Event_Process(), 等于每轮静默丢掉一条。
+     * 把条数判断放左边, 短路后 Recv() 根本不会被调用。 */
+    while (processed < APP_EVENT_BATCH_SIZE && MsgQueue_Recv(&msg)) {
         App_Event_Process(&msg);
         processed++;
     }

@@ -1,20 +1,25 @@
 /**
  * @file    kt_demo.c
- * @brief   KT06xx 双组接收芯片初始化验证界面实现
+ * @brief   KT06xx 双通道信号测试页
  *
- * @details 两组完全独立，各自走一遍完整链路：
- *            kt0656m_power_on(ch)      拉该组 CHIP_EN（组1=PB12 / 组2=PA8）
- *            kt0656m_bus_attach(main)  该组总线 init + 等 ACK + 等 POWER_ON_FINISH
+ * @details 两组完全独立，各自走一遍完整链路后再持续显示信号数据：
+ *            kt0656m_power_cycle(ch)   该组强制掉电重上（组1=PB12 / 组2=PA8）
+ *            kt0656m_bus_attach(main)  总线 init + 等 ACK + 等 POWER_ON_FINISH
  *            kt0656m_probe(main)       读 CHIP_ID / FW / 电源状态
  *            kt0656m_init(main)        射频与音频全量配置
- *            kt0656m_tune(main, f)     设频道并等 PLL 锁定（最迟 260ms）
- *            kt0656m_bus_attach(sub)   同一根 EN 已上电，从路只需挂总线
+ *            kt0656m_tune(main, f)     设频道并等 PLL 锁定
+ *            kt0656m_bus_attach(sub)   同组共用 EN，从路只需挂总线
  *
- *          失效顺序很重要：probe 必须在 init 之前，因为 init 会写一堆寄存器，
- *          芯片若根本没应答，init 只会连着报 NACK，看不出根因。
+ *          **界面只显示信号测试数据，不再显示初始化过程。**
+ *          初始化是否成功压缩成组头尾部一个 4 字符标记，一个词就能定位阶段：
+ *            OK    正常
+ *            PWR!  该组 CHIP_EN 上电失败（power_cycle 没过）
+ *            ATC!  总线挂载失败（无 ACK / 芯片未就绪）
+ *            INI!  init 写寄存器失败
+ *            TUN!  调谐失败（PLL 不锁 / VCO 校准不收敛 / 频点越界）
  *
- * @note    整屏重绘约 82ms（15MHz SPI 全屏），所以只在状态变化时画。
- *          失败组每 5s 重试一次，重试期间界面不闪（结果没变就不重绘）。
+ * @note    整屏重绘约 82ms（15MHz SPI 全屏），只在初始化或重试时画；
+ *          信号数据每 200ms 定点重画 2 行（约 0.6ms），不整屏重绘。
  */
 #include "kt_demo.h"
 #include "kt0656m.h"
@@ -25,21 +30,25 @@
 #include <string.h>
 
 /*==============================================================================
- * 布局
+ * 布局（240x320 竖屏，8x16 字体，每字符 8px 宽）
  *============================================================================*/
 #define X0              2u
-#define LINE_H          18u
-#define TITLE_GAP       22u
+#define TITLE_Y         2u
+#define LINE_PITCH      22u     /* 信号数据行间距（行高 16 + 留白 6） */
+
+#define KT_GRP_Y0       28u     /* 第一组组头 y */
+#define KT_GRP_BLOCK_H  78u     /* 每组占高：组头 22 + 数据 22 + 数据 22 + 留白 12 */
+
+/* 组头 y 坐标。最后一行底部 = KT_GRP_Y0 + 1*78 + 44 + 16 = 166，屏高 320 充裕 */
+#define KT_GRP_HDR_Y(ch)  ((uint16_t)(KT_GRP_Y0 + (uint16_t)(ch) * KT_GRP_BLOCK_H))
 
 /*==============================================================================
- * 界面状态
+ * 初始化结果（只用于决定组头标记与是否重试，不逐项显示）
  *============================================================================*/
 typedef struct {
-    uint8_t addr;       /* I2C 7 位地址        */
-    uint8_t scan_hit;   /* 1 = 地址有应答      */
-    uint8_t id_ok;      /* 1 = CHIP_ID == 0x4B54 */
-    uint8_t fw;         /* 0x010F（仅主路有效） */
-    uint8_t pwr_ok;     /* 1 = POWER_ON_FINISH */
+    uint8_t addr;
+    uint8_t id_ok;
+    uint8_t fw;
     int     attach_rc;
     int     init_rc;
     int     tune_rc;
@@ -55,18 +64,44 @@ typedef struct {
 static kt_grp_ui_t s_ui[KT_CFG_CHIP_NUM];
 static uint32_t    s_last_retry;
 
-/* 每组的总线/使能脚说明（与 kt0656m_cfg.h 第 3 节对应） */
-static const char *const s_grp_desc[KT_CFG_CHIP_NUM] = {
-    "CH1 PB13/PB14 EN PB12",
-#if (KT_CFG_CHIP_NUM > 1)
-    "CH2 PA9/PA10 EN PA8",
-#endif
-};
+/*==============================================================================
+ * 信号数据（每通道一份）
+ *============================================================================*/
+#define KT_DEMO_SIG_PERIOD_MS   200u    /* 信号刷新周期 */
+#define KT_DEMO_VOLUME          20u     /* 上电音量：KT_VOLUME_BOOT = 0，
+                                         * 不拉起来 AF 恒为 0，现象和"没天线"一样 */
 
-/* 每组的默认工作频点（KHz） */
+typedef struct {
+    uint8_t rssi;       /* 0x020C 窄带信道内 RSSI，1dB/LSB */
+    uint8_t fast_rssi;  /* 0x020A 宽带前端 RSSI，0.5dB/LSB，automute 判据 */
+    uint8_t snr;        /* 0x020D SNR，1dB/LSB */
+    uint8_t af;         /* 0x0209[3:0] 鉴频输出峰值，6dB/LSB */
+    uint8_t syn;        /* 0x0209 bit6 PKG_SYNC：BPSK 辅助包同步标志。
+                         * 模拟 FM 麦克风不发这种包，恒为 0 属正常，
+                         * **不是"解调失败"的标志** */
+    uint8_t muted;      /* 0x0088 bit0 automute 状态，0 = 已解除 */
+    uint8_t ok;         /* 0 = 本次读取失败 */
+} kt_sig_t;
+
+static kt_sig_t s_sig[KT_CFG_CHIP_NUM];
+static uint32_t s_last_sig;
+
+/*==============================================================================
+ * 每组的工作频点（KHz）
+ *
+ * 与 kt0656m_cfg.h 里的 KT_BAND_TOP_CHA/B 是两回事：那两个是**合法性上界**，
+ * 这两个是**实际调谐频点**。范围改宽后若继续复用 TOP_CHx，会调到 690.000
+ * （频段边界）而不是工作点，所以必须分开。
+ *
+ * 677.025 是实测确认值：该频点下麦克风开机后 RSSI 12→48、FAST_RSSI 100→189、
+ * automute 由 1 变 0，确认为有效接收点。
+ *============================================================================*/
+#define KT_DEMO_FREQ_CHA        659900u
+#define KT_DEMO_FREQ_CHB        656550u
+
 static uint32_t grp_freq(uint8_t ch)
 {
-    return (ch == KT_CH_A) ? KT_BAND_TOP_CHA : KT_BAND_TOP_CHB;
+    return (ch == KT_CH_A) ? KT_DEMO_FREQ_CHA : KT_DEMO_FREQ_CHB;
 }
 
 /*==============================================================================
@@ -78,7 +113,7 @@ static void chip_run(kt0656m_dev_t *dev, kt_chip_ui_t *ui, uint32_t freq_khz,
     kt0656m_info_t info;
     int rc;
 
-    ui->addr     = dev->addr;
+    ui->addr      = dev->addr;
     ui->attach_rc = KT_ERR_NOT_READY;
     ui->init_rc   = KT_ERR_NOT_READY;
     ui->tune_rc   = KT_ERR_NOT_READY;
@@ -93,10 +128,8 @@ static void chip_run(kt0656m_dev_t *dev, kt_chip_ui_t *ui, uint32_t freq_khz,
     /* 2. 探身份：先确认是谁，再谈配置 */
     rc = kt0656m_probe(dev, &info);
     if (rc == KT_OK) {
-        ui->scan_hit = info.scan_hit;
-        ui->id_ok    = info.id_ok;
-        ui->fw       = info.fw_version;
-        ui->pwr_ok   = info.boot_ok;
+        ui->id_ok = info.id_ok;
+        ui->fw    = info.fw_version;
     }
 
     /* 3. 初始化：驱动内部按角色过滤（KT0650 没有 DC/DC、EQ、Echo、SAI 等） */
@@ -108,6 +141,13 @@ static void chip_run(kt0656m_dev_t *dev, kt_chip_ui_t *ui, uint32_t freq_khz,
     /* 4. 设频道：从路也会走（内部转 tune_sub 精简路径） */
     if (do_tune != 0u) {
         ui->tune_rc = kt0656m_tune(dev, freq_khz);
+
+        /* 5. 拉起音量。KT_VOLUME_BOOT = 0（上电默认静音），不设就永远
+         *    听不到、AF 也一直读 0 —— 这个现象和"天线没接"完全一样，
+         *    是最容易误判成射频故障的一步，所以放在 init/tune 之后就做。
+         *    从路 KT0650 没有音频链路，volume_set 内部 KT_GUARD_MAIN
+         *    直接返回 KT_OK，不会误写。 */
+        (void)kt0656m_volume_set(dev, (uint8_t)KT_DEMO_VOLUME);
     }
 }
 
@@ -127,8 +167,17 @@ static void grp_run(uint8_t ch)
     sub_dev  = kt0656m_dev_sub(ch);
     freq     = grp_freq(ch);
 
-    /* 清状态（重试时也必须从干净状态开始，否则会显示上一轮的 OK） */
     (void)memset(ui, 0, sizeof(*ui));
+
+    /* memset 之后所有 rc 都是 0，而 KT_OK 正好是 0 —— 任何"提前 return"
+     * 的分支都会被误判成成功。所以先统一置 NOT_READY，再由各步骤覆盖。 */
+    ui->pwr_rc           = KT_ERR_NOT_READY;
+    ui->main_c.attach_rc = KT_ERR_NOT_READY;
+    ui->main_c.init_rc   = KT_ERR_NOT_READY;
+    ui->main_c.tune_rc   = KT_ERR_NOT_READY;
+    ui->sub_c.attach_rc  = KT_ERR_NOT_READY;
+    ui->sub_c.init_rc    = KT_ERR_NOT_READY;
+    ui->sub_c.tune_rc    = KT_ERR_NOT_READY;
 
     /* 1. 该组强制掉电重上。
      * 用 power_cycle 而不是 power_on：power_on 是幂等的，重试时若第一次上电
@@ -156,158 +205,143 @@ static void grp_run(uint8_t ch)
 }
 
 /*==============================================================================
- * 内部: 绘制
+ * 内部: 信号读取
  *============================================================================*/
-static st7789_color_t rc_color(int rc)
-{
-    return (rc == KT_OK) ? ST7789_GREEN : ST7789_RED;
-}
-
-static const char *rc_brief(int rc)
-{
-    return (rc == KT_OK) ? "OK" : kt0656m_strerror(rc);
-}
-
 /**
- * @brief 一行三态：标签 + attach/init/tune 结果
- * @note  用固定宽度 "PWR:OK" 这种短词，避免 strerror 的长字符串把行撑出屏幕
+ * @brief 读一次指定通道的信号质量
+ * @note  用 kt0656m_reg_read(0x0209) 一次拿回 AF / PKG_SYNC / PILOT 三个字段，
+ *        比分别调 af_get 与 pkg_sync_poll 少一次软 IIC 传输。
+ *
+ *        **不要用 kt0656m_pkg_sync_poll() 判断同步**：它是边沿触发的——
+ *        只有 PKG_SYNC_INT 置位时才刷新 dev->pkg_synced；信号丢失后若中断
+ *        没有再次置位，缓存值会一直停在 1，看起来"始终有信号"。直接读
+ *        寄存器拿到的才是当下状态。
+ *
+ *        软 IIC 半周期 5us，读一个寄存器约 0.4ms，本函数 5 次传输约 2ms。
+ *        两通道共约 4ms，占 10ms 事件周期的 40%，可接受。
+ *        单次失败不重试：200ms 后下一轮自然重来。
  */
-static void draw_status_line(uint16_t y, const char *name, int rc)
+static void sig_read(uint8_t ch)
 {
-    char line[40];
+    kt0656m_dev_t *dev;
+    kt_sig_t      *s;
+    uint8_t        v = 0u;
+    int            rc;
 
-    if (rc == KT_OK) {
-        (void)snprintf(line, sizeof(line), "  %s:OK", name);
-    } else {
-        (void)snprintf(line, sizeof(line), "  %s:%s", name, rc_brief(rc));
-    }
-    (void)st7789_draw_string(X0, y, line, rc_color(rc), ST7789_BLACK, 1);
-}
-
-/**
- * @brief 单颗芯片的两段状态挤一行（ATC / INI），避免行数超出 320px 屏高
- * @note  失败时把错误码原样带上，方便直接看出是 NACK 还是 TIMEOUT；
- *        长度按最坏情况 "ERR_TIMEOUT" 算过，30 字符内放得下。
- */
-static void draw_pair_line(uint16_t y, const char *n1, int rc1,
-                           const char *n2, int rc2)
-{
-    char line[40];
-
-    if (rc1 == KT_OK && rc2 == KT_OK) {
-        (void)snprintf(line, sizeof(line), "  %s:OK  %s:OK", n1, n2);
-        (void)st7789_draw_string(X0, y, line, ST7789_GREEN, ST7789_BLACK, 1);
+    if (ch >= KT_CFG_CHIP_NUM) {
         return;
     }
 
-    /* 至少一段失败：整行标红，失败的那段带错误码，另一段照实写 */
-    if (rc1 == KT_OK) {
-        (void)snprintf(line, sizeof(line), "  %s:OK  %s:%s",
-                       n1, n2, rc_brief(rc2));
-    } else if (rc2 == KT_OK) {
-        (void)snprintf(line, sizeof(line), "  %s:%s  %s:OK",
-                       n1, rc_brief(rc1), n2);
-    } else {
-        (void)snprintf(line, sizeof(line), "  %s:%s  %s:%s",
-                       n1, rc_brief(rc1), n2, rc_brief(rc2));
+    s   = &s_sig[ch];
+    dev = kt0656m_dev(ch);
+    s->ok = 0u;
+
+    if (dev == 0) {
+        return;
     }
-    (void)st7789_draw_string(X0, y, line, ST7789_RED, ST7789_BLACK, 1);
+
+    rc = kt0656m_rssi_get(dev, &s->rssi);
+    if (rc != KT_OK) return;
+    rc = kt0656m_fast_rssi_get(dev, &s->fast_rssi);
+    if (rc != KT_OK) return;
+    rc = kt0656m_snr_get(dev, &s->snr);
+    if (rc != KT_OK) return;
+    rc = kt0656m_reg_read(dev, KT_REG_SIG_STA, &v);
+    if (rc != KT_OK) return;
+
+    s->af  = (uint8_t)(v & KT_AF_MSK);
+    s->syn = ((v & KT_PKG_SYNC) != 0u) ? 1u : 0u;
+
+    rc = kt0656m_automute_get(dev, &s->muted);
+    if (rc != KT_OK) return;
+
+    s->ok = 1u;
 }
 
-static void draw_main_block(uint16_t *py, const kt_chip_ui_t *ui)
+/*==============================================================================
+ * 内部: 绘制
+ *============================================================================*/
+/**
+ * @brief 组头尾部标记：一个 4 字符就定位失败的阶段
+ * @note  顺序即执行顺序，先失败的先返回。依赖 grp_run() 里"先统一置
+ *        NOT_READY"的初始化，否则 memset 的 0 会伪装成 KT_OK。
+ */
+static const char *grp_stage(const kt_grp_ui_t *ui)
 {
-    char line[40];
-    uint16_t y = *py;
-
-    /* 身份行：地址 + CHIP_ID + 固件版本 */
-    if (ui->id_ok != 0u) {
-        (void)snprintf(line, sizeof(line), "M 0x%02X ID:OK FW:%02X",
-                       (unsigned)ui->addr, (unsigned)ui->fw);
-    } else {
-        (void)snprintf(line, sizeof(line), "M 0x%02X ID:FAIL",
-                       (unsigned)ui->addr);
-    }
-    (void)st7789_draw_string(X0, y, line,
-                             (ui->id_ok != 0u) ? ST7789_WHITE : ST7789_RED,
-                             ST7789_BLACK, 1);
-    y += LINE_H;
-
-    draw_pair_line(y, "ATC", ui->attach_rc, "INI", ui->init_rc);
-    y += LINE_H;
-
-    draw_status_line(y, "TUN", ui->tune_rc);
-    y += LINE_H;
-
-    *py = y;
+    if (ui->pwr_rc != KT_OK)           return "PWR!";
+    if (ui->main_c.attach_rc != KT_OK) return "ATC!";
+    if (ui->main_c.init_rc != KT_OK)   return "INI!";
+    if (ui->main_c.tune_rc != KT_OK)   return "TUN!";
+    return "OK";
 }
 
-static void draw_sub_block(uint16_t *py, const kt_chip_ui_t *ui)
+/** @brief 组头：[CH1] 677.025MHz OK   —— 只在初始化/重试后画 */
+static void draw_grp_header(uint8_t ch)
 {
-    char line[40];
-    uint16_t y = *py;
+    char           line[40];
+    uint16_t       y  = KT_GRP_HDR_Y(ch);
+    uint32_t       f  = grp_freq(ch);
+    st7789_color_t c;
 
-    /* 从路不显示 FW：KT0650 手册没有 0x010F 定义，读回来是未定义值 */
-    if (ui->id_ok != 0u) {
-        (void)snprintf(line, sizeof(line), "S 0x%02X ID:OK",
-                       (unsigned)ui->addr);
-    } else {
-        (void)snprintf(line, sizeof(line), "S 0x%02X ID:FAIL",
-                       (unsigned)ui->addr);
+    (void)snprintf(line, sizeof(line), "[CH%u] %u.%03uMHz %s",
+                   (unsigned)(ch + 1u), (unsigned)(f / 1000u),
+                   (unsigned)(f % 1000u), grp_stage(&s_ui[ch]));
+
+    c = (s_ui[ch].usable != 0u) ? ST7789_CYAN : ST7789_RED;
+    (void)st7789_draw_string(X0, y, line, c, ST7789_BLACK, 1);
+}
+
+/**
+ * @brief 该通道的 2 行信号数据 —— 每 200ms 重画
+ * @note  只在固定 y 上重画，不清屏。每行按固定宽度格式化，保证新值
+ *        完全覆盖旧值，不会残留。
+ *        读失败时用 "-" 占位而不是留空格：空格依赖字库里有 0x20 字形，
+ *        自定义子集字库会画出乱码；而且静默定格在旧值比没有显示更误导。
+ */
+static void draw_grp_sig(uint8_t ch)
+{
+    char            line[40];
+    uint16_t        y  = (uint16_t)(KT_GRP_HDR_Y(ch) + LINE_PITCH);
+    const kt_sig_t *s  = &s_sig[ch];
+    st7789_color_t  c;
+
+    if (s->ok == 0u) {
+        (void)st7789_draw_string(X0, y, "R:--- FR:--- S:---",
+                                 ST7789_RED, ST7789_BLACK, 1);
+        y = (uint16_t)(y + LINE_PITCH);
+        (void)st7789_draw_string(X0, y, "AF:-- SY:- MU:- V:--",
+                                 ST7789_RED, ST7789_BLACK, 1);
+        return;
     }
-    (void)st7789_draw_string(X0, y, line,
-                             (ui->id_ok != 0u) ? ST7789_WHITE : ST7789_RED,
-                             ST7789_BLACK, 1);
-    y += LINE_H;
 
-    draw_pair_line(y, "ATC", ui->attach_rc, "INI", ui->init_rc);
-    y += LINE_H;
+    /* 行1：射频能量。FR 过 automute 阈值就说明"载波够强"，用绿色 */
+    (void)snprintf(line, sizeof(line), "R:%03u FR:%03u S:%03u",
+                   (unsigned)s->rssi, (unsigned)s->fast_rssi,
+                   (unsigned)s->snr);
+    c = (s->fast_rssi >= KT_FAST_RSSI_MUTE_TH) ? ST7789_GREEN
+                                               : ST7789_LIGHTGRAY;
+    (void)st7789_draw_string(X0, y, line, c, ST7789_BLACK, 1);
+    y = (uint16_t)(y + LINE_PITCH);
 
-    *py = y;
+    /* 行2：音频与门控。MU=0 表示芯片已解除静音（信号判定合格），绿色 */
+    (void)snprintf(line, sizeof(line), "AF:%02u SY:%u MU:%u V:%02u",
+                   (unsigned)s->af, (unsigned)s->syn,
+                   (unsigned)s->muted, (unsigned)KT_DEMO_VOLUME);
+    c = (s->muted == 0u) ? ST7789_GREEN : ST7789_YELLOW;
+    (void)st7789_draw_string(X0, y, line, c, ST7789_BLACK, 1);
 }
 
 static void redraw(void)
 {
-    uint16_t y;
-    uint8_t  ch;
+    uint8_t ch;
 
     (void)st7789_fill(ST7789_BLACK);
-
-    y = 2u;
-    (void)st7789_draw_string(X0, y, "KT06xx DUAL GROUP", ST7789_CYAN,
-                             ST7789_BLACK, 1);
-    y += TITLE_GAP;
+    (void)st7789_draw_string(X0, TITLE_Y, "KT06xx DUAL CH TEST",
+                             ST7789_CYAN, ST7789_BLACK, 1);
 
     for (ch = 0; ch < KT_CFG_CHIP_NUM; ch++) {
-        (void)st7789_draw_string(X0, y, s_grp_desc[ch], ST7789_LIGHTGRAY,
-                                 ST7789_BLACK, 1);
-        y += LINE_H;
-
-        draw_main_block(&y, &s_ui[ch].main_c);
-        draw_sub_block(&y, &s_ui[ch].sub_c);
-
-        y += 4u;    /* 组间留白 */
-    }
-
-    /* 底部汇总：一眼看出还有没有需要重试的组 */
-    {
-        char line[40];
-        uint8_t bad = 0;
-
-        for (ch = 0; ch < KT_CFG_CHIP_NUM; ch++) {
-            if (s_ui[ch].usable == 0u) {
-                bad++;
-            }
-        }
-        if (bad == 0u) {
-            (void)snprintf(line, sizeof(line), "ALL GROUPS READY");
-            (void)st7789_draw_string(X0, y, line, ST7789_GREEN,
-                                     ST7789_BLACK, 1);
-        } else {
-            (void)snprintf(line, sizeof(line), "%u GROUP(S) RETRYING",
-                           (unsigned)bad);
-            (void)st7789_draw_string(X0, y, line, ST7789_YELLOW,
-                                     ST7789_BLACK, 1);
-        }
+        draw_grp_header(ch);
+        draw_grp_sig(ch);
     }
 }
 
@@ -316,7 +350,7 @@ static void redraw(void)
  *============================================================================*/
 int KtDemo_Init(void)
 {
-    uint8_t  ch;
+    uint8_t ch;
 
     if (st7789_init() != ST7789_OK) {
         return -1;
@@ -325,15 +359,22 @@ int KtDemo_Init(void)
 
     /* 先给个提示屏：下面每组要 0.5~1.5s，黑屏容易让人以为死机 */
     (void)st7789_fill(ST7789_BLACK);
-    (void)st7789_draw_string(X0, 2u, "KT06xx INIT...", ST7789_YELLOW,
+    (void)st7789_draw_string(X0, TITLE_Y, "KT06xx INIT...", ST7789_YELLOW,
                              ST7789_BLACK, 1);
 
     (void)memset(s_ui, 0, sizeof(s_ui));
+    (void)memset(s_sig, 0, sizeof(s_sig));
     s_last_retry = BM_GetTick();
 
     for (ch = 0; ch < KT_CFG_CHIP_NUM; ch++) {
         grp_run(ch);
     }
+
+    /* 先读一次，否则首屏数据行会停在 "R:---" 直到下一个刷新周期 */
+    for (ch = 0; ch < KT_CFG_CHIP_NUM; ch++) {
+        sig_read(ch);
+    }
+    s_last_sig = BM_GetTick();
 
     redraw();
     return 0;
@@ -351,19 +392,34 @@ void KtDemo_Task(void)
             break;
         }
     }
-    if (need_retry == 0u) {
-        return;     /* 全部就绪：本任务空转，不刷屏 */
-    }
 
-    if ((uint32_t)(now - s_last_retry) < KT_DEMO_RETRY_MS) {
+    /* 有组不可用：按 KT_DEMO_RETRY_MS 整组重跑。
+     * redraw() 会清屏，所以重绘后必须立刻补一次信号，否则数据行要空到
+     * 下一个刷新周期才恢复。 */
+    if (need_retry != 0u &&
+        (uint32_t)(now - s_last_retry) >= KT_DEMO_RETRY_MS) {
+        s_last_retry = now;
+
+        for (ch = 0; ch < KT_CFG_CHIP_NUM; ch++) {
+            if (s_ui[ch].usable == 0u) {
+                grp_run(ch);
+            }
+        }
+        for (ch = 0; ch < KT_CFG_CHIP_NUM; ch++) {
+            sig_read(ch);
+        }
+        s_last_sig = now;
+        redraw();
         return;
     }
-    s_last_retry = now;
 
-    for (ch = 0; ch < KT_CFG_CHIP_NUM; ch++) {
-        if (s_ui[ch].usable == 0u) {
-            grp_run(ch);
+    /* 信号刷新：只重画两组各 2 行，不整屏重绘（整屏 82ms 会明显闪） */
+    if ((uint32_t)(now - s_last_sig) >= KT_DEMO_SIG_PERIOD_MS) {
+        s_last_sig = now;
+
+        for (ch = 0; ch < KT_CFG_CHIP_NUM; ch++) {
+            sig_read(ch);
+            draw_grp_sig(ch);
         }
     }
-    redraw();
 }

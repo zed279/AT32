@@ -42,25 +42,30 @@ void MsgQueue_Clear(void)
  *============================================================================*/
 uint8_t MsgQueue_Send(Message_t *msg)
 {
+    uint8_t ok = 0;
+
     if (msg == NULL) return 0;
 
-    /* 检查是否已满 */
-    if (s_queue.count >= MSG_QUEUE_SIZE) {
-        return 0;   /* 队列满, 丢弃消息 */
-    }
-
-    /* 拷贝消息到缓冲区 */
-    memcpy((void*)&s_queue.buffer[s_queue.tail], msg, sizeof(Message_t));
-
-    /* 推进写指针 (位掩码代替取模, 要求 MSG_QUEUE_SIZE 为 2 的幂) */
-    s_queue.tail = (s_queue.tail + 1) & (MSG_QUEUE_SIZE - 1);
-
-    /* 临界区保护 count 自增 (可能在中断中调用) */
+    /* 判满 / 写缓冲 / 推进 tail / count 自增 必须是一个原子的整体。
+     * 早期实现只把 count++ 放进临界区, 于是存在这个窗口:
+     *   任务 Send 写完 buffer 但还没执行 tail++ 时被中断打断,
+     *   中断里的 Send 读到同一个 tail, 写到同一个槽位 —— 后写覆盖前写,
+     *   两边各自 count++, 结果是队列里一条数据重复、另一条真数据丢失。
+     * 当前只有 EXINT0 一个生产者所以没暴露, 一旦编码器 EXTI / 射频事件
+     * 也开始投递就会踩中。整段关中断的代价只有一次 12 字节 memcpy。 */
     BM_EnterCritical();
-    s_queue.count++;
+
+    if (s_queue.count < MSG_QUEUE_SIZE) {
+        memcpy((void*)&s_queue.buffer[s_queue.tail], msg, sizeof(Message_t));
+        s_queue.tail = (s_queue.tail + 1) & (MSG_QUEUE_SIZE - 1);
+        s_queue.count++;
+        ok = 1;
+    }
+    /* else: 队列满, 静默丢弃 (返回 0 由调用者决定是否重试) */
+
     BM_ExitCritical();
 
-    return 1;
+    return ok;
 }
 
 /*==============================================================================

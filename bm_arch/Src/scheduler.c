@@ -71,7 +71,18 @@ void Scheduler_Run(void)
         uint32_t elapsed = current_tick - s_tasks[i].last_run;
 
         if (elapsed >= s_tasks[i].period_ms) {
-            s_tasks[i].last_run += s_tasks[i].period_ms;
+            /* 相位累加 (last_run += period) 能消除长期漂移, 但落后太多时
+             * 会变成"补跑": elapsed 仍远大于 period, 此后每一轮主循环都
+             * 立即触发一次, 直到把欠下的拍数追平。
+             * 典型场景: KT 重试时 grp_run() 阻塞 1~1.5s, 10ms 的 TASK_EVENT
+             * 会欠下约 150 拍, 恢复后连续 150 轮以 0ms 周期空转。
+             * 落后达到 2 个周期即判定为"被长阻塞打断", 直接对齐到当前时刻,
+             * 放弃补跑 —— 周期任务要的是相位稳定, 不是补足历史次数。 */
+            if (elapsed >= (s_tasks[i].period_ms * 2U)) {
+                s_tasks[i].last_run = current_tick;
+            } else {
+                s_tasks[i].last_run += s_tasks[i].period_ms;
+            }
             s_tasks[i].func();
         }
     }

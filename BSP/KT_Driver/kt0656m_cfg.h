@@ -190,11 +190,25 @@
  * 否则同名宏会在预处理阶段互相覆盖。 */
 #define KT_CFG_DCDC_EN          1       /* 芯片内部 DCDC：0 关 / 1 开 */
 
-/* 频段（单位 KHz，步进 300KHz） */
-#define KT_BAND_TOP_CHA         754850u
-#define KT_BAND_BOTTOM_CHA      740150u
-#define KT_BAND_TOP_CHB         769850u
-#define KT_BAND_BOTTOM_CHB      755150u
+/* 频段范围（单位 KHz）
+ *
+ * 芯片 RF 能力是 470~960MHz（KT0656M datasheet），下面的上下界**不是芯片限制**，
+ * 而是软件挡板：kt0656m_tune() / tune_fast() / scan() 用它挡住非法频率。
+ *
+ * 本板麦克风工作在 640~690MHz，所以挡板按它设。
+ * 注意检查用的是 [BOTTOM_CHA, TOP_CHB] 这一整个连续区间，
+ * 所以 A/B 两组共用同一范围，不再像原 WS19 那样切成两个子频段。
+ *
+ * 改成别的频段只需要动这四个数，驱动内部无需修改：
+ * 频道字就是 freq_khz 的 20 位整数（见 write_channel），470000~960000 都能表示。 */
+#define KT_BAND_BOTTOM_CHA      640000u
+#define KT_BAND_TOP_CHA         690000u
+#define KT_BAND_BOTTOM_CHB      640000u
+#define KT_BAND_TOP_CHB         690000u
+
+/* 频道网格步进。**当前代码里没有任何地方引用**，只作为频道规划参考保留。
+ * 原厂驱动用的是 50KHz（BAND_STEP_RX），芯片本身不限制步进，
+ * 实际网格取决于发射机的频道表。 */
 #define KT_BAND_STEP            300u
 
 /* AFC：2'b00 ±20 / 01 ±40 / 10 ±60 / 11 ±90 kHz */

@@ -23,8 +23,15 @@ extern "C" {
  *          **不报错、不打印、不留痕迹**, 表现为"任务函数写了但从来不执行",
  *          极易误判成外设/驱动问题. scheduler.c 末尾有一处编译期断言兜底.
  *============================================================================*/
+/* 留 4 个余量: 原来的 8 个槽位被 TaskHandle_t 枚举 (TASK_0..TASK_KT = 8 个)
+ * 刚好占满, 再加一个任务时 Scheduler_RegisterTask() 会因 id >= 容量而
+ * 静默返回 0 —— 现象是"任务注册了但永远不跑", 极难定位。 */
 #ifndef SCHEDULER_MAX_TASKS
-#define SCHEDULER_MAX_TASKS  16
+
+
+
+#define SCHEDULER_MAX_TASKS  12
+
 #endif
 
 /*==============================================================================
@@ -34,7 +41,6 @@ typedef enum {
     TASK_0 = 0,
     TASK_1,
     TASK_2,
-    TASK_LED,               /* 应用: LED 流水灯                     */
     TASK_EVENT,             /* 框架: 消息队列排空 (App_Event_ProcessAll) */
     TASK_LCD,               /* 应用: LCD 动画 (每帧渲染一次, 已停用) */
     TASK_ENCODER,           /* 应用: 编码器采样 + LCD 换色验证 (已停用) */
@@ -43,6 +49,11 @@ typedef enum {
     /* ... 在此添加更多任务 ... */
     TASK_MAX                /* 必须放最后, 自动表示任务总数 */
 } TaskHandle_t;
+
+/* 编译期容量检查 —— 枚举常量在预处理阶段不可见, 所以用"负长度数组"报错:
+ * 一旦 TASK_MAX > SCHEDULER_MAX_TASKS, 这里编译失败, 而不是等到运行期
+ * Scheduler_RegisterTask() 静默返回 0。 */
+extern char scheduler_task_count_check_t[(TASK_MAX <= SCHEDULER_MAX_TASKS) ? 1 : -1];
 
 /*==============================================================================
  * 任务函数指针

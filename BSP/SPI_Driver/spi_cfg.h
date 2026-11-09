@@ -1,6 +1,6 @@
 /**
  * @file    spi_cfg.h
- * @brief   可复用 SPI 驱动 - 本工程配置 (ST7789 LCD / AT32F403AVGT7)
+ * @brief   可复用 SPI 驱动 - 本工程配置 (ST7789 LCD / AT32F403ACGT7)
  *
  * @note    本工程只有一条 SPI 总线, 接 ST7789 240x320 TFT (只写, 无 MISO):
  *

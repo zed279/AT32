@@ -1,6 +1,6 @@
 /**
  * @file    gpio_cfg.h
- * @brief   GPIO 驱动模板 - 本工程配置 (ST7789 240x320 LCD / AT32F403AVGT7)
+ * @brief   GPIO 驱动模板 - 本工程配置 (ST7789 240x320 LCD / AT32F403ACGT7)
  *
  * @note    本工程引脚分配 (SPI 4 线: SCK/MOSI/CS/DC + RESET + BL):
  *            PA3  -> TFT_LED   (背光, 推挽输出, 初始灭)
